@@ -1,0 +1,41 @@
+parse_preview:
+  fields:
+    player:
+      required: false
+      selector:
+        entity:
+          domain: media_player
+    title:
+      required: false
+      example: "Spider-Noir - S1 ∙ E1 - Entra nel mio ufficio"
+      selector:
+        text:
+    media_content_type:
+      required: false
+      example: "video"
+      selector:
+        text:
+    media_duration:
+      required: false
+      example: 2815
+      selector:
+        number:
+          min: 0
+          max: 86400
+          unit_of_measurement: s
+          mode: box
+    resolve:
+      required: false
+      default: true
+      selector:
+        boolean:
+
+stop_scrobble:
+  fields:
+    player:
+      required: true
+      selector:
+        entity:
+          domain: media_player
+
+refresh_token:

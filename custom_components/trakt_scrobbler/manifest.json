@@ -1,0 +1,12 @@
+{
+  "domain": "trakt_scrobbler",
+  "name": "Trakt Scrobbler",
+  "codeowners": ["@FezVrasta"],
+  "config_flow": true,
+  "documentation": "https://github.com/FezVrasta/ha-trakt-scrobbler",
+  "integration_type": "service",
+  "iot_class": "cloud_push",
+  "issue_tracker": "https://github.com/FezVrasta/ha-trakt-scrobbler/issues",
+  "requirements": [],
+  "version": "0.1.0"
+}

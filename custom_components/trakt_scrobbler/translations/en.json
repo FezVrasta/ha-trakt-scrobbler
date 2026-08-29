@@ -1,0 +1,122 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to Trakt",
+        "description": "Choose how this integration should authorise with Trakt.",
+        "menu_options": {
+          "bundled": "Sign in with Trakt (recommended)",
+          "own_app": "Use my own Trakt API application"
+        }
+      },
+      "players": {
+        "title": "Media players",
+        "description": "Signed in as {username}. Pick the players whose playback should be scrobbled to Trakt.",
+        "data": {
+          "players": "Media players"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Reconnect to Trakt",
+        "description": "Your Trakt authorization expired. Continue to authorize this integration again."
+      },
+      "own_app": {
+        "title": "Your Trakt application",
+        "description": "Registering an API application at {app_url} requires a Trakt VIP membership. Paste the client ID and secret of an app you already own.",
+        "data": {
+          "client_id": "Client ID",
+          "client_secret": "Client secret"
+        }
+      }
+    },
+    "progress": {
+      "wait_for_authorization": "Open {url} and enter the code:\n\n**{code}**\n\nThis window continues automatically once you approve it."
+    },
+    "error": {
+      "cannot_connect": "Could not reach Trakt. Check your network and try again.",
+      "invalid_credentials": "Trakt rejected the client ID or secret.",
+      "code_expired": "The authorization code expired before it was approved.",
+      "authorization_denied": "The authorization request was denied on Trakt."
+    },
+    "abort": {
+      "already_configured": "This Trakt account is already set up.",
+      "reauth_successful": "Trakt was reconnected."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Trakt Scrobbler options",
+        "data": {
+          "players": "Media players",
+          "excluded_apps": "Ignored apps",
+          "min_duration": "Minimum duration",
+          "heartbeat": "Progress refresh interval",
+          "next_episode_fallback": "Guess the episode when the player only reports a show name"
+        },
+        "data_description": {
+          "excluded_apps": "Playback is skipped when any of these matches the app name or ID. Type a value and press enter to add it.",
+          "min_duration": "Anything shorter than this is treated as a clip and ignored.",
+          "heartbeat": "How often an ongoing scrobble is re-sent so Trakt tracks seeks.",
+          "next_episode_fallback": "The Apple TV app reports only a series name. When enabled, the next unwatched episode from your Trakt progress is scrobbled instead of skipping it."
+        }
+      }
+    }
+  },
+  "services": {
+    "parse_preview": {
+      "name": "Preview match",
+      "description": "Show how a title would be parsed and which Trakt item it matches, without scrobbling anything.",
+      "fields": {
+        "player": {
+          "name": "Media player",
+          "description": "Read the title and attributes from this player's current state."
+        },
+        "title": {
+          "name": "Title",
+          "description": "A media title to test instead of, or on top of, the player's own."
+        },
+        "media_content_type": {
+          "name": "Content type",
+          "description": "Override the content type used for the test."
+        },
+        "media_duration": {
+          "name": "Duration",
+          "description": "Runtime in seconds, used to pick between same-named films and shows."
+        },
+        "resolve": {
+          "name": "Look up on Trakt",
+          "description": "Also query Trakt for the match. Turn off to test parsing only."
+        }
+      }
+    },
+    "stop_scrobble": {
+      "name": "Stop scrobble",
+      "description": "End the scrobble in progress for a player, submitting its current progress to Trakt.",
+      "fields": {
+        "player": {
+          "name": "Media player",
+          "description": "The player whose scrobble should be stopped."
+        }
+      }
+    },
+    "refresh_token": {
+      "name": "Refresh token",
+      "description": "Force a refresh of the Trakt OAuth access token."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "scrobble_status": {
+        "state": {
+          "idle": "Idle",
+          "watching": "Watching",
+          "paused": "Paused",
+          "unmatched": "Unmatched",
+          "ignored": "Ignored",
+          "error": "Error"
+        }
+      }
+    }
+  }
+}
