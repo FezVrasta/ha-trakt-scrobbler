@@ -4,6 +4,8 @@
 
 <br clear="left"/>
 
+[![Open your Home Assistant instance and open this repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=FezVrasta&repository=ha-trakt-scrobbler&category=integration)
+
 Scrobbles whatever your Home Assistant media players are playing to
 [Trakt.tv](https://trakt.tv) — no extra app on the device, no Plex webhook, no
 polling script. If Home Assistant knows what is on screen, Trakt does too.
@@ -27,8 +29,10 @@ playback, but it works with anything that exposes a `media_player` entity
 
 ### HACS
 
+Click the button above, or add it manually:
+
 1. HACS → ⋮ → **Custom repositories**
-2. Add this repository with category **Integration**
+2. Add `https://github.com/FezVrasta/ha-trakt-scrobbler` with category **Integration**
 3. Install **Trakt Scrobbler**, then restart Home Assistant
 
 ### Manual
