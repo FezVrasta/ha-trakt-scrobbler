@@ -1,4 +1,8 @@
+<img src="brands/icon.png" alt="Trakt" width="96" align="left" />
+
 # Trakt Scrobbler for Home Assistant
+
+<br clear="left"/>
 
 Scrobbles whatever your Home Assistant media players are playing to
 [Trakt.tv](https://trakt.tv) — no extra app on the device, no Plex webhook, no
