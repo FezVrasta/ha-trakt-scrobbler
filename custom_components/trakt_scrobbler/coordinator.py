@@ -98,10 +98,16 @@ class ScrobbleSession:
     last_sent_at: datetime | None = None
     started_at: datetime = field(default_factory=dt_util.utcnow)
 
+    #: the player's current artwork (episode still), surfaced on the sensor
+    artwork: str | None = None
+
     def update_playback(self, state: str, attributes: dict[str, Any]) -> None:
         """Fold a new player state into the session's progress tracking."""
         now = dt_util.utcnow()
         was_playing = self.player_state == STATE_PLAYING
+
+        if picture := attributes.get("entity_picture"):
+            self.artwork = picture
 
         if (duration := attributes.get("media_duration")) is not None:
             try:

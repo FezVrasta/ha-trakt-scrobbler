@@ -169,12 +169,37 @@ episodes — look right.
 
 ## Sensors
 
-One sensor per configured player, with states `idle`, `watching`, `paused`,
-`unmatched`, `ignored` and `error`, plus attributes:
+One sensor per configured player. Its state is one of `idle`, `watching`,
+`paused`, `unmatched`, `ignored`, `error`, and its picture is the episode still
+the player is showing — so a media/glance card renders the artwork directly.
 
-`detected`, `raw_title`, `parse_method`, `trakt_title`, `trakt_url`, `trakt_id`,
-`match_method`, `episode_guessed`, `media_type`, `season`, `episode`,
-`progress`, `elapsed`, `duration`, `last_action`, `reason`, `error`.
+**What is playing** — `title`, `show_title`, `episode_title`, `episode_code`
+(`S03E09`), `season`, `episode`, `media_type`, `trakt_title`, `trakt_url`,
+`trakt_id`, `artwork`.
+
+**Progress** — `player_state` (`playing`/`paused`), `progress` (%),
+`position` / `remaining` / `duration` as `M:SS`, and the same three as
+`*_seconds`.
+
+**How it was identified** — `detected`, `raw_title`, `parse_method`,
+`match_method` (e.g. `thumbnail_match`), `episode_guessed`, `last_action`,
+`session_started`, plus `reason` / `error` when something went wrong.
+
+Example for a live Apple TV playing *Silo*:
+
+```json
+{
+  "player_state": "playing",
+  "title": "Farewell",
+  "show_title": "Silo",
+  "episode_code": "S03E09",
+  "season": 3, "episode": 9,
+  "trakt_url": "https://trakt.tv/shows/silo/seasons/3/episodes/9",
+  "position": "44:32", "duration": "1:07:55", "remaining": "23:23",
+  "progress": 65.6,
+  "match_method": "thumbnail_match", "episode_guessed": false
+}
+```
 
 ## Services
 

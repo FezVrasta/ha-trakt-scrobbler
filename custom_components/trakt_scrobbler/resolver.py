@@ -240,7 +240,11 @@ class TraktResolver:
             episode=number,
             method=method,
             guessed=guessed,
-            extra={"episode_title": episode.get("title"), "runtime": episode.get("runtime")},
+            extra={
+                "show_title": show.get("title"),
+                "episode_title": episode.get("title"),
+                "runtime": episode.get("runtime"),
+            },
         )
 
     async def _resolve_show(

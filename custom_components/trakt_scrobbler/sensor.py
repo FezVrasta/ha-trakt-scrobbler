@@ -34,6 +34,16 @@ _OPTIONS = [
 ]
 
 
+def _hms(seconds: int) -> str:
+    """Format seconds as M:SS, or H:MM:SS past an hour."""
+    seconds = max(int(seconds), 0)
+    hours, rem = divmod(seconds, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: "TraktScrobblerConfigEntry",
@@ -97,6 +107,12 @@ class ScrobbleStatusSensor(SensorEntity):
         return session.status
 
     @property
+    def entity_picture(self) -> str | None:
+        """Show the episode still on the sensor, when there is one."""
+        session = self._manager.sessions.get(self._player)
+        return session.artwork if session is not None else None
+
+    @property
     def extra_state_attributes(self) -> dict[str, Any]:
         attributes: dict[str, Any] = {"player": self._player}
 
@@ -107,13 +123,22 @@ class ScrobbleStatusSensor(SensorEntity):
         if session is None:
             return attributes
 
+        elapsed = round(session.elapsed)
+        duration = int(session.duration) if session.duration else None
+        remaining = max(duration - elapsed, 0) if duration is not None else None
         attributes.update(
             {
+                "player_state": session.player_state,
                 "progress": round(session.progress, 1),
-                "elapsed": round(session.elapsed),
-                "duration": session.duration,
+                "position": _hms(elapsed),
+                "position_seconds": elapsed,
+                "duration": _hms(duration) if duration is not None else None,
+                "duration_seconds": duration,
+                "remaining": _hms(remaining) if remaining is not None else None,
+                "remaining_seconds": remaining,
                 "last_action": session.last_action,
                 "session_started": session.started_at.isoformat(),
+                "artwork": session.artwork,
             }
         )
 
@@ -132,11 +157,20 @@ class ScrobbleStatusSensor(SensorEntity):
                     "trakt_id": resolved.trakt_id,
                     "match_method": resolved.method,
                     "episode_guessed": resolved.guessed,
+                    "show_title": resolved.extra.get("show_title"),
+                    "episode_title": resolved.extra.get("episode_title"),
                 }
+            )
+            # A single friendly title regardless of movie vs episode.
+            attributes["title"] = (
+                resolved.extra.get("episode_title")
+                if resolved.kind == "episode"
+                else resolved.display
             )
             if resolved.season is not None:
                 attributes["season"] = resolved.season
                 attributes["episode"] = resolved.episode
+                attributes["episode_code"] = f"S{resolved.season:02d}E{resolved.episode:02d}"
 
         if session.reason:
             attributes["reason"] = session.reason

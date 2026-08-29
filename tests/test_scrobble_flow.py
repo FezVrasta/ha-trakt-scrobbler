@@ -286,6 +286,29 @@ def test_wall_clock_progress_without_position() -> None:
     _check(52 < session.progress < 54, f"progress {session.progress}")
 
 
+def test_session_exposes_rich_metadata() -> None:
+    """The session carries artwork + show/episode titles for the sensor."""
+    manager, _ = build()
+    attrs = {**INFUSE, "entity_picture": "/api/media_player_proxy/x?token=abc"}
+    asyncio.run(manager._evaluate(PLAYER, "playing", _at(attrs, 100)))
+    session = manager.sessions[PLAYER]
+    _check(session.artwork == "/api/media_player_proxy/x?token=abc", "artwork not captured")
+    _check(session.resolved is not None, "should have resolved")
+    extra = session.resolved.extra
+    _check(extra.get("show_title") == "Spider-Noir", f"show_title={extra.get('show_title')!r}")
+    _check(extra.get("episode_title") == "Episode 1", f"episode_title={extra.get('episode_title')!r}")
+    _check(session.player_state == "playing", "player_state should be playing")
+
+
+def test_hms_formatting() -> None:
+    from custom_components.trakt_scrobbler.sensor import _hms
+    _check(_hms(0) == "0:00", _hms(0))
+    _check(_hms(9) == "0:09", _hms(9))
+    _check(_hms(75) == "1:15", _hms(75))
+    _check(_hms(2671) == "44:31", _hms(2671))
+    _check(_hms(3661) == "1:01:01", _hms(3661))
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failures = 0
