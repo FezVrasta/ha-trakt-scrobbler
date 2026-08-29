@@ -112,15 +112,32 @@ order:
    | `Fallout: Season 1: Episode 3: The Head` | Fallout S01E03 |
    | `Dune: Part Two (2024)` | Dune: Part Two (2024), movie |
 
-4. **A bare name** like `Ted Lasso` — which is what the built-in Apple TV app
-   reports. Trakt is asked whether it knows a film or a show by that name, using
-   the reported runtime as a tie-breaker. If it's a show, the **next unwatched
-   episode** from your Trakt progress is scrobbled (see below).
+4. **A bare name** like `Silo` — which is what the built-in Apple TV app
+   reports (no season or episode). Here the integration uses the player's
+   **thumbnail**: the Apple TV exposes the episode's still frame, and it's the
+   same frame Trakt/TMDB use, so a perceptual hash pins the exact episode. If
+   the artwork can't be matched, it falls back to the reported runtime and the
+   **next unwatched episode** from your Trakt progress (see below).
 
 > **Infuse is excluded by default.** It has its own built-in Trakt scrobbler, so
 > letting this integration scrobble it too would double-count. Its title format
 > is still handled (the parser row above) for anyone who removes `infuse` from
 > the ignored-apps list.
+
+### Episode identification by thumbnail
+
+The Apple TV's TV app never reports a season or episode, but it *does* publish
+the episode's still frame as artwork (`entity_picture`). For scripted shows that
+frame is the very same screenshot TMDB — and therefore Trakt — uses for the
+episode. So the integration hashes the artwork (a 256-bit difference hash on
+luminance, robust to Trakt serving a desaturated copy) and compares it against
+every episode still of the matched show. In practice the correct episode scores
+a Hamming distance in the low single digits while every other episode sits above
+100, so it's accepted only when one episode is both close and far ahead of the
+runner-up. A hit is reported with `match_method: thumbnail_match` and
+`episode_guessed: false` — it's identified, not guessed. Toggle it with the
+**Match episodes by thumbnail** option (on by default). When it can't decide, the
+next-episode guess below takes over.
 
 ### The next-episode guess
 
@@ -143,6 +160,7 @@ integration's settings if you'd rather skip those instead of guessing.
 | Ignored apps | Infuse, YouTube, Music, Podcasts, Spotify, Fitness… | Playback is skipped when the string matches the app name or ID |
 | Minimum duration | 300 s | Anything shorter is treated as a clip and ignored |
 | Progress refresh interval | 300 s | How often an ongoing scrobble is re-sent so Trakt follows seeks |
+| Match episodes by thumbnail | on | Identify the exact episode from the player's artwork (Apple TV app) |
 | Guess the episode | on | The next-episode fallback described above |
 
 Watch the logs (`custom_components.trakt_scrobbler` at `info` level) or the

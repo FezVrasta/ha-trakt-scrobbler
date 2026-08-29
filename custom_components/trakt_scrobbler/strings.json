@@ -52,13 +52,15 @@
           "excluded_apps": "Ignored apps",
           "min_duration": "Minimum duration",
           "heartbeat": "Progress refresh interval",
-          "next_episode_fallback": "Guess the episode when the player only reports a show name"
+          "next_episode_fallback": "Guess the episode when the player only reports a show name",
+          "thumbnail_match": "Match episodes by thumbnail"
         },
         "data_description": {
           "excluded_apps": "Playback is skipped when any of these matches the app name or ID. Type a value and press enter to add it.",
           "min_duration": "Anything shorter than this is treated as a clip and ignored.",
           "heartbeat": "How often an ongoing scrobble is re-sent so Trakt tracks seeks.",
-          "next_episode_fallback": "The Apple TV app reports only a series name. When enabled, the next unwatched episode from your Trakt progress is scrobbled instead of skipping it."
+          "next_episode_fallback": "The Apple TV app reports only a series name. When enabled, the next unwatched episode from your Trakt progress is scrobbled instead of skipping it.",
+          "thumbnail_match": "The Apple TV app reports only a show name. When on, the exact episode is identified by matching the player's artwork to Trakt's episode stills, instead of guessing."
         }
       }
     }

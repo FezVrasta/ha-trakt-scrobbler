@@ -46,11 +46,13 @@ CONF_EXCLUDED_APPS: Final = "excluded_apps"
 CONF_MIN_DURATION: Final = "min_duration"
 CONF_NEXT_EPISODE_FALLBACK: Final = "next_episode_fallback"
 CONF_HEARTBEAT: Final = "heartbeat"
+CONF_THUMBNAIL_MATCH: Final = "thumbnail_match"
 
 # Option defaults
 DEFAULT_MIN_DURATION: Final = 300  # seconds; ignore clips/trailers
 DEFAULT_HEARTBEAT: Final = 300  # seconds between progress refreshes
 DEFAULT_NEXT_EPISODE_FALLBACK: Final = True
+DEFAULT_THUMBNAIL_MATCH: Final = True
 
 # Apps that never carry scrobbleable movie/episode content. Matched
 # case-insensitively as a substring of both app_name and app_id.

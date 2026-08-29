@@ -6,6 +6,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from . import image_match
 from .api import TraktClient, TraktError, TraktNotFoundError
 from .parser import KIND_EPISODE, KIND_MOVIE, KIND_SHOW, MediaItem
 
@@ -123,32 +124,44 @@ class TraktResolver:
         self._cache.clear()
 
     async def async_resolve(
-        self, item: MediaItem, duration: float | None = None
+        self,
+        item: MediaItem,
+        duration: float | None = None,
+        thumbnail_hash: int | None = None,
     ) -> Resolved:
-        """Resolve ``item``, raising :class:`ResolutionError` when we cannot."""
+        """Resolve ``item``, raising :class:`ResolutionError` when we cannot.
+
+        ``thumbnail_hash`` is a difference hash of the player's current artwork;
+        for a show with no episode number it lets us identify the exact episode
+        by matching Trakt's episode stills instead of guessing.
+        """
         key = (item.kind, item.title.lower(), item.year, item.season, item.episode)
-        if (cached := self._cache.get(key)) is not None:
+        # Only explicit identities (a parsed S/E, or a movie) are cacheable.
+        # Shows and bare titles resolve to an episode dynamically, so caching
+        # them under the title would pin the wrong episode next time.
+        cacheable = item.kind in (KIND_MOVIE, KIND_EPISODE)
+        if cacheable and (cached := self._cache.get(key)) is not None:
             return cached
 
         try:
-            resolved = await self._resolve(item, duration)
+            resolved = await self._resolve(item, duration, thumbnail_hash)
         except TraktError as err:
             raise ResolutionError("trakt_error", str(err)) from err
 
-        # Guessed episodes must not be cached: the guess moves on as the user
-        # watches, so it has to be recomputed for every new session.
-        if not resolved.guessed:
+        if cacheable and not resolved.guessed:
             self._cache[key] = resolved
         return resolved
 
-    async def _resolve(self, item: MediaItem, duration: float | None) -> Resolved:
+    async def _resolve(
+        self, item: MediaItem, duration: float | None, thumbnail_hash: int | None
+    ) -> Resolved:
         if item.kind == KIND_MOVIE:
             return await self._resolve_movie(item, duration)
         if item.kind == KIND_EPISODE:
             return await self._resolve_episode(item, duration)
         if item.kind == KIND_SHOW:
-            return await self._resolve_show(item, duration)
-        return await self._resolve_ambiguous(item, duration)
+            return await self._resolve_show(item, duration, thumbnail_hash)
+        return await self._resolve_ambiguous(item, duration, thumbnail_hash)
 
     async def _resolve_movie(self, item: MediaItem, duration: float | None) -> Resolved:
         results = await self._client.async_search("movie", item.title, item.year)
@@ -230,18 +243,33 @@ class TraktResolver:
             extra={"episode_title": episode.get("title"), "runtime": episode.get("runtime")},
         )
 
-    async def _resolve_show(self, item: MediaItem, duration: float | None) -> Resolved:
-        """A show we can name but no episode number -- guess the next one up."""
+    async def _resolve_show(
+        self,
+        item: MediaItem,
+        duration: float | None,
+        thumbnail_hash: int | None = None,
+    ) -> Resolved:
+        """A show we can name but no episode number.
+
+        Try to pin the exact episode by matching the player's thumbnail against
+        Trakt's episode stills; only if that fails fall back to guessing the
+        next unwatched episode.
+        """
+        show = await self._find_show(item.title, item.year, duration)
+        show_ids = show.get("ids", {})
+        show_id = show_ids.get("trakt")
+
+        if thumbnail_hash is not None:
+            matched = await self._match_by_thumbnail(show, show_id, thumbnail_hash)
+            if matched is not None:
+                return matched
+
         if not self._next_episode_fallback:
             raise ResolutionError(
                 "no_episode_number",
                 f"{item.title!r} has no season/episode and the next-episode "
                 "fallback is disabled",
             )
-
-        show = await self._find_show(item.title, item.year, duration)
-        show_ids = show.get("ids", {})
-        show_id = show_ids.get("trakt")
 
         season, number = 1, 1
         try:
@@ -263,8 +291,66 @@ class TraktResolver:
 
         return self._episode_result(show, episode, "next_episode_guess", guessed=True)
 
+    async def _match_by_thumbnail(
+        self, show: dict[str, Any], show_id: int, thumbnail_hash: int
+    ) -> Resolved | None:
+        """Identify the episode by matching the player artwork to Trakt stills."""
+        if not image_match.available():
+            return None
+
+        try:
+            seasons = await self._client.async_get_seasons(show_id)
+        except TraktError as err:
+            _LOGGER.debug("Could not list seasons for %s: %s", show_id, err)
+            return None
+
+        candidates: list[dict[str, Any]] = []
+        episodes_by_key: dict[tuple[int, int], dict[str, Any]] = {}
+        for season in seasons:
+            number = season.get("number")
+            if not number:  # skip specials (season 0)
+                continue
+            try:
+                episodes = await self._client.async_get_season_episodes(show_id, number)
+            except TraktError:
+                continue
+            for episode in episodes:
+                shots = (episode.get("images") or {}).get("screenshot") or []
+                if not shots:
+                    continue
+                s, n = episode.get("season"), episode.get("number")
+                episodes_by_key[(s, n)] = episode
+                candidates.append(
+                    {"season": s, "episode": n, "title": episode.get("title"), "image": shots[0]}
+                )
+
+        match = await image_match.async_best_match(
+            self._client.session, thumbnail_hash, candidates
+        )
+        if match is None:
+            return None
+
+        episode = episodes_by_key.get((match.season, match.episode))
+        if episode is None:
+            return None
+
+        _LOGGER.info(
+            "Thumbnail identified %s S%02dE%02d (distance %d, runner-up %s)",
+            show.get("title"),
+            match.season,
+            match.episode,
+            match.distance,
+            match.runner_up,
+        )
+        resolved = self._episode_result(show, episode, "thumbnail_match")
+        resolved.extra["thumbnail_distance"] = match.distance
+        return resolved
+
     async def _resolve_ambiguous(
-        self, item: MediaItem, duration: float | None
+        self,
+        item: MediaItem,
+        duration: float | None,
+        thumbnail_hash: int | None = None,
     ) -> Resolved:
         """A bare title. Ask Trakt whether it knows a film or a show by that name."""
         movies = await self._client.async_search("movie", item.title, item.year)
@@ -272,6 +358,18 @@ class TraktResolver:
 
         best_movie = _best_scored(movies, "movie", duration)
         best_show = _best_scored(shows, "show", duration)
+
+        # A confirmed episode still is a near-certain signal — stronger than any
+        # title score — so when the name matches a show, try the thumbnail before
+        # deciding between film and series. "Silo" is both a film and a series;
+        # the artwork settles it.
+        if thumbnail_hash is not None and best_show:
+            show = best_show[1]
+            matched = await self._match_by_thumbnail(
+                show, show.get("ids", {}).get("trakt"), thumbnail_hash
+            )
+            if matched is not None:
+                return matched
 
         if best_movie and (not best_show or best_movie[0] >= best_show[0]):
             return self._movie_result(best_movie[1], f"{item.method}->movie")
@@ -284,6 +382,6 @@ class TraktResolver:
                 raw_title=item.raw_title,
                 method=item.method,
             )
-            return await self._resolve_show(show_item, duration)
+            return await self._resolve_show(show_item, duration, thumbnail_hash)
 
         raise ResolutionError("not_found", f"Trakt knows nothing called {item.title!r}")

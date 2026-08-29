@@ -42,6 +42,7 @@ from .const import (
     CONF_HEARTBEAT,
     CONF_MIN_DURATION,
     CONF_NEXT_EPISODE_FALLBACK,
+    CONF_THUMBNAIL_MATCH,
     CONF_PLAYERS,
     CONF_TOKENS,
     CONF_USERNAME,
@@ -49,6 +50,7 @@ from .const import (
     DEFAULT_HEARTBEAT,
     DEFAULT_MIN_DURATION,
     DEFAULT_NEXT_EPISODE_FALLBACK,
+    DEFAULT_THUMBNAIL_MATCH,
     DOMAIN,
     TRAKT_APP_URL,
 )
@@ -113,6 +115,10 @@ def _options_schema(options: dict[str, Any]) -> vol.Schema:
                 default=options.get(
                     CONF_NEXT_EPISODE_FALLBACK, DEFAULT_NEXT_EPISODE_FALLBACK
                 ),
+            ): selector.BooleanSelector(),
+            vol.Optional(
+                CONF_THUMBNAIL_MATCH,
+                default=options.get(CONF_THUMBNAIL_MATCH, DEFAULT_THUMBNAIL_MATCH),
             ): selector.BooleanSelector(),
         }
     )
@@ -291,6 +297,7 @@ class TraktScrobblerConfigFlow(ConfigFlow, domain=DOMAIN):
                     CONF_MIN_DURATION: DEFAULT_MIN_DURATION,
                     CONF_HEARTBEAT: DEFAULT_HEARTBEAT,
                     CONF_NEXT_EPISODE_FALLBACK: DEFAULT_NEXT_EPISODE_FALLBACK,
+                    CONF_THUMBNAIL_MATCH: DEFAULT_THUMBNAIL_MATCH,
                 },
             )
 

@@ -18,10 +18,12 @@ from homeassistant.const import (
     STATE_UNKNOWN,
 )
 from homeassistant.core import CALLBACK_TYPE, Event, EventStateChangedData, HomeAssistant
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.event import (
     async_track_state_change_event,
     async_track_time_interval,
 )
+from homeassistant.helpers.network import get_url
 from homeassistant.util import dt as dt_util
 
 from .api import (
@@ -40,17 +42,20 @@ from .const import (
     CONF_MIN_DURATION,
     CONF_NEXT_EPISODE_FALLBACK,
     CONF_PLAYERS,
+    CONF_THUMBNAIL_MATCH,
     DEFAULT_EXCLUDED_APPS,
     DEFAULT_HEARTBEAT,
     DEFAULT_MIN_DURATION,
     DEFAULT_NEXT_EPISODE_FALLBACK,
+    DEFAULT_THUMBNAIL_MATCH,
     IGNORED_CONTENT_TYPES,
     STATE_ERROR,
     STATE_UNMATCHED,
     STATE_WATCHING,
     TICK_INTERVAL,
 )
-from .parser import MediaItem, parse_attributes
+from . import image_match
+from .parser import KIND_SHOW, MediaItem, parse_attributes
 from .resolver import Resolved, ResolutionError, TraktResolver
 
 _LOGGER = logging.getLogger(__name__)
@@ -197,6 +202,10 @@ class ScrobbleManager:
         return bool(
             self._option(CONF_NEXT_EPISODE_FALLBACK, DEFAULT_NEXT_EPISODE_FALLBACK)
         )
+
+    @property
+    def thumbnail_match(self) -> bool:
+        return bool(self._option(CONF_THUMBNAIL_MATCH, DEFAULT_THUMBNAIL_MATCH))
 
     @property
     def heartbeat(self) -> float:
@@ -356,9 +365,16 @@ class ScrobbleManager:
         session.item = parsed.item
         self._resolver.set_next_episode_fallback(self.next_episode_fallback)
 
+        # For a bare show name (the Apple TV app), the player's artwork is the
+        # same frame Trakt uses for the episode still, so hash it and let the
+        # resolver identify the exact episode instead of guessing.
+        thumbnail_hash = None
+        if self.thumbnail_match and parsed.item.kind in (KIND_SHOW, "ambiguous"):
+            thumbnail_hash = await self._async_thumbnail_hash(attributes)
+
         try:
             session.resolved = await self._resolver.async_resolve(
-                parsed.item, session.duration
+                parsed.item, session.duration, thumbnail_hash
             )
         except ResolutionError as err:
             session.status = STATE_UNMATCHED
@@ -380,6 +396,23 @@ class ScrobbleManager:
             session.resolved.display,
             session.resolved.method,
         )
+
+    async def _async_thumbnail_hash(self, attributes: dict[str, Any]) -> int | None:
+        """Fetch the player's artwork and return its difference hash."""
+        picture = attributes.get("entity_picture")
+        if not picture or not image_match.available():
+            return None
+        try:
+            url = picture if picture.startswith("http") else f"{get_url(self.hass, allow_internal=True)}{picture}"
+            session = async_get_clientsession(self.hass)
+            async with session.get(url, timeout=15) as response:
+                if response.status != 200:
+                    return None
+                data = await response.read()
+        except Exception as err:  # noqa: BLE001 - artwork is best-effort
+            _LOGGER.debug("Could not fetch player artwork: %s", err)
+            return None
+        return image_match.hash_bytes(data)
 
     # ------------------------------------------------------------------
     # Scrobbling

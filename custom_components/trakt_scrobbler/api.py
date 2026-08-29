@@ -118,6 +118,10 @@ class TraktClient:
         self._refresh_lock = asyncio.Lock()
 
     @property
+    def session(self) -> ClientSession:
+        return self._session
+
+    @property
     def tokens(self) -> Tokens | None:
         return self._tokens
 
@@ -248,6 +252,25 @@ class TraktClient:
             params={"extended": "full"},
             require_auth=False,
         )
+
+    async def async_get_seasons(self, show_id: int) -> list[dict[str, Any]]:
+        """List a show's seasons (numbers only needed)."""
+        result = await self._request(
+            "GET", f"/shows/{show_id}/seasons", require_auth=False
+        )
+        return result if isinstance(result, list) else []
+
+    async def async_get_season_episodes(
+        self, show_id: int, season: int
+    ) -> list[dict[str, Any]]:
+        """All episodes of a season, each with its screenshot image."""
+        result = await self._request(
+            "GET",
+            f"/shows/{show_id}/seasons/{season}",
+            params={"extended": "full,images"},
+            require_auth=False,
+        )
+        return result if isinstance(result, list) else []
 
     async def async_get_watched_progress(self, show_id: int) -> dict[str, Any]:
         """Watched progress for a show, which carries ``next_episode``."""
