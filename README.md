@@ -1,4 +1,4 @@
-<img src="brands/icon.png" alt="Trakt" width="96" align="left" />
+<img src="custom_components/trakt_scrobbler/brand/icon.png" alt="Trakt" width="96" align="left" />
 
 # Trakt Scrobbler for Home Assistant
 
