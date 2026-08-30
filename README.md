@@ -15,6 +15,13 @@ Scrobbles whatever your Home Assistant media players are playing to
   by matching the episode thumbnail against Trakt's stills.
 - Exposes a sensor per player with the artwork, title, episode, and progress.
 
+<p align="center">
+  <img src="docs/live-activity.png" alt="iPhone screenshot: Apple TV playback controls above a Trakt Live Activity showing the same episode" width="420" />
+</p>
+
+Because the scrobble lands on Trakt in real time, the Trakt app's Live Activity
+follows along with whatever the Apple TV is playing.
+
 ## Install
 
 Click the badge above (or add this repo to HACS as a custom **Integration**),
