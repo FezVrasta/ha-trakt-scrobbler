@@ -376,7 +376,9 @@ class ScrobbleManager:
         # resolver identify the exact episode instead of guessing.
         thumbnail_hash = None
         if self.thumbnail_match and parsed.item.kind in (KIND_SHOW, "ambiguous"):
-            thumbnail_hash = await self._async_thumbnail_hash(attributes)
+            thumbnail_hash = await self._async_thumbnail_hash(
+                session.entity_id, attributes
+            )
 
         try:
             session.resolved = await self._resolver.async_resolve(
@@ -403,22 +405,73 @@ class ScrobbleManager:
             session.resolved.method,
         )
 
-    async def _async_thumbnail_hash(self, attributes: dict[str, Any]) -> int | None:
-        """Fetch the player's artwork and return its difference hash."""
-        picture = attributes.get("entity_picture")
-        if not picture or not image_match.available():
+    async def _async_thumbnail_hash(
+        self, entity_id: str, attributes: dict[str, Any]
+    ) -> int | None:
+        """Return a difference hash of the player's current artwork."""
+        if not image_match.available():
+            _LOGGER.debug("Pillow unavailable, cannot hash artwork")
             return None
+        data = await self._async_artwork_bytes(entity_id, attributes)
+        if not data:
+            return None
+        return image_match.hash_bytes(data)
+
+    async def _async_artwork_bytes(
+        self, entity_id: str, attributes: dict[str, Any]
+    ) -> bytes | None:
+        """Read the player's artwork, preferring not to leave the process.
+
+        `entity_picture` is normally Home Assistant's own proxy path, and
+        fetching that back over HTTP needs a base URL that resolves from inside
+        the container -- `get_url()` can hand back one that does not. On a real
+        install it returned http://10.0.0.2:8124, which the container could not
+        dial, so the artwork never loaded, `thumbnail_hash` was always None and
+        episode identification silently degraded to guessing the next unwatched
+        episode. Ask the player for the image directly instead: the proxy view
+        is itself only a wrapper around `async_get_media_image`, so this is the
+        same payload without the round trip.
+        """
+        picture = attributes.get("entity_picture")
+
+        # Genuinely remote artwork still has to be fetched.
+        if picture and picture.startswith("http"):
+            return await self._async_fetch_artwork(picture)
+
+        # Duck-typed on purpose: this reaches into hass.data rather than
+        # importing media_player, so a change to that component's internals
+        # degrades to the HTTP path below instead of breaking setup.
+        component = self.hass.data.get("media_player")
+        get_entity = getattr(component, "get_entity", None)
+        entity = get_entity(entity_id) if get_entity is not None else None
+        if entity is not None:
+            try:
+                image, _content_type = await entity.async_get_media_image()
+            except Exception as err:  # noqa: BLE001 - artwork is best-effort
+                _LOGGER.debug("Could not read artwork from %s: %s", entity_id, err)
+            else:
+                if image:
+                    return image
+                _LOGGER.debug("%s returned no media image", entity_id)
+
+        # Last resort, for installs where get_url() does resolve internally.
+        if picture:
+            return await self._async_fetch_artwork(
+                f"{get_url(self.hass, allow_internal=True)}{picture}"
+            )
+        return None
+
+    async def _async_fetch_artwork(self, url: str) -> bytes | None:
         try:
-            url = picture if picture.startswith("http") else f"{get_url(self.hass, allow_internal=True)}{picture}"
             session = async_get_clientsession(self.hass)
             async with session.get(url, timeout=15) as response:
                 if response.status != 200:
+                    _LOGGER.debug("Artwork fetch returned HTTP %s", response.status)
                     return None
-                data = await response.read()
+                return await response.read()
         except Exception as err:  # noqa: BLE001 - artwork is best-effort
             _LOGGER.debug("Could not fetch player artwork: %s", err)
             return None
-        return image_match.hash_bytes(data)
 
     # ------------------------------------------------------------------
     # Scrobbling

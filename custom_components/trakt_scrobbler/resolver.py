@@ -381,6 +381,11 @@ class TraktResolver:
                     {"season": s, "episode": n, "title": episode.get("title"), "image": shots[0]}
                 )
 
+        _LOGGER.debug(
+            "Thumbnail matching %s against %d episode stills",
+            show.get("title"),
+            len(candidates),
+        )
         match = await image_match.async_best_match(
             self._client.session, thumbnail_hash, candidates
         )
