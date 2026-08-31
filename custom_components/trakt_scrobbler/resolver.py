@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import re
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -15,6 +17,12 @@ _LOGGER = logging.getLogger(__name__)
 #: how far a candidate's runtime may sit from the reported duration before we
 #: stop believing it is the same thing (as a fraction of the reported duration)
 _RUNTIME_TOLERANCE = 0.35
+
+#: Runtime verdicts, ordered worst to best. A candidate we know nothing about
+#: outranks one we have positively measured as the wrong length.
+_FIT_MISMATCH = 0
+_FIT_UNKNOWN = 1
+_FIT_MATCH = 2
 
 
 @dataclass(slots=True)
@@ -56,57 +64,102 @@ class ResolutionError(Exception):
         self.reason = reason
 
 
-def _runtime_penalty(runtime_minutes: Any, duration_seconds: float | None) -> float:
-    """Score adjustment based on how well a candidate's runtime fits.
+def _fold(title: Any) -> str:
+    """Normalise a title for comparison: case, accents and punctuation.
 
-    Trakt's own relevance score is the primary signal; runtime is a tie-breaker
-    that stops "Ted Lasso" the film from beating "Ted Lasso" the show.
+    Trakt spells the Shogun series "Shōgun"; players generally do not.
+    """
+    text = unicodedata.normalize("NFKD", str(title or ""))
+    text = "".join(char for char in text if not unicodedata.combining(char))
+    return re.sub(r"[^a-z0-9]+", "", text.casefold())
+
+
+def _runtime_fit(runtime_minutes: Any, duration_seconds: float | None) -> int:
+    """Does a candidate's runtime agree with what the player reports?
+
+    For a show Trakt's ``runtime`` is the average episode length, so it is
+    comparable with the duration of the episode being played.
     """
     if not duration_seconds or not runtime_minutes:
-        return 0.0
+        return _FIT_UNKNOWN
     try:
         runtime = float(runtime_minutes) * 60
     except (TypeError, ValueError):
-        return 0.0
+        return _FIT_UNKNOWN
     if runtime <= 0:
-        return 0.0
+        return _FIT_UNKNOWN
     drift = abs(runtime - duration_seconds) / duration_seconds
-    if drift <= _RUNTIME_TOLERANCE:
-        return 25.0 * (1 - drift / _RUNTIME_TOLERANCE)
-    return -20.0
+    return _FIT_MATCH if drift <= _RUNTIME_TOLERANCE else _FIT_MISMATCH
+
+
+@dataclass(slots=True)
+class _Candidate:
+    """One Trakt search hit, with runtime kept as its own ranking key.
+
+    Runtime cannot be folded into the score. Trakt returns relevance as a
+    number around 1.16e18, where one float64 step is 256 -- so the obvious
+    `score += bonus` is discarded outright (`score + 25.0 == score` is *True*).
+    That is why the runtime tie-breaker never once fired.
+
+    The two keys are weighted differently depending on what is being compared:
+
+    * `rank` (within one search) puts relevance first, because Trakt's own
+      ordering is authoritative there and a show's `runtime` is only an
+      *average* -- Trakt lists Ted Lasso at 45 minutes though season one runs
+      nearer 31, so a strict runtime test would demote the right show.
+    * `kind_rank` (across the movie and show searches) puts runtime first and
+      breaks ties on whether the title matches exactly, because the two scores
+      come from separate queries, are not comparable, and in practice come back
+      byte-identical. Without the title check a 65-minute Kamen Rider film
+      whose name merely *contains* "Shogun" ties the Shōgun series on runtime
+      and wins the coin toss.
+    """
+
+    body: dict[str, Any]
+    fit: int
+    score: float
+    index: int
+    exact: bool = False
+
+    @property
+    def rank(self) -> tuple[float, int, int]:
+        # Ties go to the earlier hit: Trakt returns results most-relevant first.
+        return (self.score, self.fit, -self.index)
+
+    @property
+    def kind_rank(self) -> tuple[int, bool, float]:
+        return (self.fit, self.exact, self.score)
+
+
+def _rank(
+    results: list[dict[str, Any]],
+    key: str,
+    duration: float | None,
+    query: str | None = None,
+) -> _Candidate | None:
+    """Pick the best candidate of one type out of a Trakt search response."""
+    wanted = _fold(query) if query else ""
+    candidates = [
+        _Candidate(
+            body=body,
+            fit=_runtime_fit(body.get("runtime"), duration),
+            score=float(entry.get("score") or 0),
+            index=index,
+            exact=bool(wanted) and _fold(body.get("title")) == wanted,
+        )
+        for index, entry in enumerate(results)
+        if (body := entry.get(key))
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda candidate: candidate.rank)
 
 
 def _best(
     results: list[dict[str, Any]], key: str, duration: float | None
 ) -> dict[str, Any] | None:
-    """Pick the best candidate of one type out of a Trakt search response."""
-    scored: list[tuple[float, dict[str, Any]]] = []
-    for entry in results:
-        body = entry.get(key)
-        if not body:
-            continue
-        score = float(entry.get("score") or 0)
-        score += _runtime_penalty(body.get("runtime"), duration)
-        scored.append((score, body))
-    if not scored:
-        return None
-    return max(scored, key=lambda pair: pair[0])[1]
-
-
-def _best_scored(
-    results: list[dict[str, Any]], key: str, duration: float | None
-) -> tuple[float, dict[str, Any]] | None:
-    scored: list[tuple[float, dict[str, Any]]] = []
-    for entry in results:
-        body = entry.get(key)
-        if not body:
-            continue
-        score = float(entry.get("score") or 0)
-        score += _runtime_penalty(body.get("runtime"), duration)
-        scored.append((score, body))
-    if not scored:
-        return None
-    return max(scored, key=lambda pair: pair[0])
+    candidate = _rank(results, key, duration)
+    return candidate.body if candidate is not None else None
 
 
 class TraktResolver:
@@ -360,32 +413,47 @@ class TraktResolver:
         movies = await self._client.async_search("movie", item.title, item.year)
         shows = await self._client.async_search("show", item.title, item.year)
 
-        best_movie = _best_scored(movies, "movie", duration)
-        best_show = _best_scored(shows, "show", duration)
+        best_movie = _rank(movies, "movie", duration, item.title)
+        best_show = _rank(shows, "show", duration, item.title)
 
         # A confirmed episode still is a near-certain signal — stronger than any
         # title score — so when the name matches a show, try the thumbnail before
         # deciding between film and series. "Silo" is both a film and a series;
         # the artwork settles it.
         if thumbnail_hash is not None and best_show:
-            show = best_show[1]
+            show = best_show.body
             matched = await self._match_by_thumbnail(
                 show, show.get("ids", {}).get("trakt"), thumbnail_hash
             )
             if matched is not None:
                 return matched
 
-        if best_movie and (not best_show or best_movie[0] >= best_show[0]):
-            return self._movie_result(best_movie[1], f"{item.method}->movie")
+        if best_movie is None and best_show is None:
+            raise ResolutionError(
+                "not_found", f"Trakt knows nothing called {item.title!r}"
+            )
 
-        if best_show:
+        if best_movie is None:
+            prefer_show = True
+        elif best_show is None:
+            prefer_show = False
+        else:
+            # Runtime decides whenever it can tell the two apart. The two scores
+            # come from separate searches and are usually identical anyway, so
+            # comparing them alone is a coin toss that always lands on the film
+            # -- which is how a 59-minute episode of "Dark Matter" ended up
+            # scrobbled as the 90-minute 2008 film. On a genuine tie we still
+            # keep the historical preference for the movie.
+            prefer_show = best_show.kind_rank > best_movie.kind_rank
+
+        if prefer_show:
             show_item = MediaItem(
                 kind=KIND_SHOW,
-                title=best_show[1].get("title", item.title),
-                year=best_show[1].get("year"),
+                title=best_show.body.get("title", item.title),
+                year=best_show.body.get("year"),
                 raw_title=item.raw_title,
                 method=item.method,
             )
             return await self._resolve_show(show_item, duration, thumbnail_hash)
 
-        raise ResolutionError("not_found", f"Trakt knows nothing called {item.title!r}")
+        return self._movie_result(best_movie.body, f"{item.method}->movie")
