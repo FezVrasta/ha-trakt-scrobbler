@@ -39,6 +39,15 @@ class TraktNotFoundError(TraktError):
     """Trakt has no such item."""
 
 
+class TraktAlreadyScrobbledError(TraktError):
+    """Trakt has already recorded this item as watched.
+
+    Returned as HTTP 409 when the same episode is scrobbled twice in quick
+    succession -- which happens routinely, because a player often keeps
+    reporting an episode on its post-play screen after it has finished.
+    """
+
+
 class DeviceCodeExpired(TraktError):
     """The device code ran out before the user approved it."""
 
@@ -368,6 +377,11 @@ class TraktClient:
             )
         if response.status == 404:
             raise TraktNotFoundError(f"Not found: {response.url.path}")
+        if response.status == 409:
+            # The body carries when the existing scrobble landed.
+            raise TraktAlreadyScrobbledError(
+                f"Already scrobbled: {(await response.text())[:200]}"
+            )
         if response.status == 429:
             retry_after = response.headers.get("Retry-After", "1")
             raise TraktRateLimitError(f"Rate limited, retry after {retry_after}s")

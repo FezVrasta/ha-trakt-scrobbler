@@ -27,6 +27,7 @@ from homeassistant.helpers.network import get_url
 from homeassistant.util import dt as dt_util
 
 from .api import (
+    TraktAlreadyScrobbledError,
     TraktAuthError,
     TraktClient,
     TraktError,
@@ -68,6 +69,14 @@ _DEAD_STATES = {STATE_IDLE, STATE_OFF, STATE_STANDBY, STATE_UNAVAILABLE, STATE_U
 #: don't re-send `start` unless progress moved at least this much
 _PROGRESS_EPSILON = 1.0
 
+#: How far a position report may fall behind what we had already extrapolated
+#: before we stop believing it. Only applied across a player state change --
+#: comfortably more than the jitter of a real seek-and-resume.
+_REWIND_TOLERANCE = 15.0
+
+#: Trakt rejects `pause` and `stop` below this progress with HTTP 422.
+_MIN_SCROBBLE_PROGRESS = 1.0
+
 
 @dataclass
 class ScrobbleSession:
@@ -105,6 +114,7 @@ class ScrobbleSession:
         """Fold a new player state into the session's progress tracking."""
         now = dt_util.utcnow()
         was_playing = self.player_state == STATE_PLAYING
+        state_changed = state != self.player_state
 
         if picture := attributes.get("entity_picture"):
             self.artwork = picture
@@ -115,6 +125,10 @@ class ScrobbleSession:
             except (TypeError, ValueError):
                 pass
 
+        # How far playback had got, extrapolated against the state the session
+        # was in until this update. Captured before the new report is folded in.
+        watched = self.elapsed if self.position is not None else None
+
         position = attributes.get("media_position")
         if position is not None:
             try:
@@ -123,6 +137,22 @@ class ScrobbleSession:
                 self.position = None
             updated = attributes.get("media_position_updated_at")
             self.position_updated_at = updated if isinstance(updated, datetime) else now
+
+        # A player may report a `media_position` that has not kept up with
+        # playback. The Apple TV pushes one only every few minutes, so the
+        # value arriving with a pause can be a quarter of an hour behind, and
+        # `elapsed` stops extrapolating the moment the state leaves `playing`.
+        # Taken at face value that rewinds the session, and the `stop` scrobble
+        # then lands below Trakt's 80% threshold, so a fully watched episode is
+        # never marked watched. Pin the extrapolated figure instead. A real seek
+        # arrives as a position change *within* a state, which is still trusted.
+        if (
+            state_changed
+            and watched is not None
+            and (self.position is None or self.position < watched - _REWIND_TOLERANCE)
+        ):
+            self.position = watched
+            self.position_updated_at = now
 
         # Maintain the wall-clock accumulator across play/pause transitions.
         if was_playing and self.playing_since is not None:
@@ -494,6 +524,11 @@ class ScrobbleManager:
             return
 
         progress = session.progress
+        if action == ACTION_PAUSE and progress < _MIN_SCROBBLE_PROGRESS:
+            # Trakt 422s a pause this early, and nothing has been watched yet.
+            session.status = STATE_PAUSED
+            return
+
         if session.last_action == action:
             # Same action as last time: only re-send as a periodic heartbeat so
             # Trakt's progress bar keeps up with seeks.
@@ -519,13 +554,23 @@ class ScrobbleManager:
             ACTION_START,
             ACTION_PAUSE,
         ):
-            await self._async_send(session, ACTION_STOP, session.progress)
-            _LOGGER.info(
-                "Stopped scrobble for %s at %.1f%% (%s)",
-                session.resolved.display,
-                session.progress,
-                reason,
-            )
+            progress = session.progress
+            if progress < _MIN_SCROBBLE_PROGRESS:
+                # Trakt 422s a stop this early; let its checkin expire instead.
+                _LOGGER.debug(
+                    "Dropping scrobble for %s, only %.1f%% watched (%s)",
+                    session.resolved.display,
+                    progress,
+                    reason,
+                )
+            else:
+                await self._async_send(session, ACTION_STOP, progress)
+                _LOGGER.info(
+                    "Stopped scrobble for %s at %.1f%% (%s)",
+                    session.resolved.display,
+                    progress,
+                    reason,
+                )
         if notify:
             self._notify()
 
@@ -548,6 +593,15 @@ class ScrobbleManager:
 
         try:
             await self.client.async_scrobble(action, payload)
+            self.last_error = None
+            session.error = None
+        except TraktAlreadyScrobbledError as err:
+            # Trakt already has it. Players commonly keep reporting an episode
+            # on their post-play screen once it ends, which starts a second
+            # session for something already in the history. Not a failure.
+            _LOGGER.debug(
+                "Trakt already has %s: %s", session.resolved.display, err
+            )
             self.last_error = None
             session.error = None
         except TraktRateLimitError as err:
