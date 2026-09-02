@@ -24,11 +24,15 @@ jobs:
           category: integration
 
   tests:
-    name: Parser tests
+    name: Tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+      # Each suite stubs what it needs, so none of them require Home Assistant.
       - run: python tests/test_parser.py
+      - run: python tests/test_progress.py
+      - run: python tests/test_resolver.py
+      - run: python tests/test_image_match.py
