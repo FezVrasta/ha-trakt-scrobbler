@@ -1,8 +1,8 @@
-<img src="custom_components/trakt_scrobbler/brand/icon.png" alt="Trakt" width="96" align="left" />
+<p align="center">
+  <img src="custom_components/trakt_scrobbler/brand/icon.png" alt="Trakt Scrobbler" width="96" />
+</p>
 
 # Trakt Scrobbler for Home Assistant
-
-<br clear="left"/>
 
 [![Open your Home Assistant instance and open this repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=FezVrasta&repository=ha-trakt-scrobbler&category=integration)
 
