@@ -172,6 +172,169 @@ def test_no_title() -> None:
     _check(parse_attributes({}).reason == "no_title", "expected a no_title reason")
 
 
+# Apps that put the show in media_title and the episode in a companion field.
+# (attributes, show, season, episode, episode_title)
+COMPANION_CASES = [
+    # Prime Video on an Apple TV, Italian UI.
+    (
+        {"media_title": "Reacher", "media_artist": "Stagione 4, Ep. 6 Lo sfortunato Plum"},
+        "Reacher", 4, 6, "Lo sfortunato Plum",
+    ),
+    # The same app sometimes uses the short form instead.
+    (
+        {"media_title": "La Fattoria Clarkson", "media_artist": "S5 E4 In aggiornamento"},
+        "La Fattoria Clarkson", 5, 4, "In aggiornamento",
+    ),
+    # Disney+.
+    (
+        {"media_title": "Furious", "media_artist": "S1:E4 Alluvione lampo"},
+        "Furious", 1, 4, "Alluvione lampo",
+    ),
+    # English and other locales.
+    (
+        {"media_title": "The Boys", "media_artist": "Season 5, Ep. 6 Fall of the Sky"},
+        "The Boys", 5, 6, "Fall of the Sky",
+    ),
+    (
+        {"media_title": "Dark", "media_artist": "Staffel 3, Folge 7 Der Titel"},
+        "Dark", 3, 7, "Der Titel",
+    ),
+    (
+        {"media_title": "Show", "media_album_name": "Season 2, Episode 10: The Title"},
+        "Show", 2, 10, "The Title",
+    ),
+]
+
+# A companion field holding something that is not an episode reference at all --
+# a YouTube channel, a band, a broadcaster. These must fall through untouched.
+COMPANION_NON_EPISODES = [
+    "Reed's Smart Home",
+    "Real Civil Engineer",
+    "Elio e le Storie Tese",
+    "Corridor Crew e KreatureKid",
+    "Aldo Giovanni e Giacomo Ufficiale",
+    "The Grand Tour",
+    "Sky Uno",
+]
+
+# "Show Ep.N": an episode number with no season beside it.
+EPISODE_ONLY_CASES = [
+    ("Chernobyl Ep.05", "Chernobyl", 5),
+    ("Chernobyl - Ep. 5", "Chernobyl", 5),
+    ("Chernobyl Episodio 3", "Chernobyl", 3),
+    ("Band of Brothers Ep 7", "Band of Brothers", 7),
+    ("Die Welle Folge 4", "Die Welle", 4),
+]
+
+# Titles that merely contain the letters "ep" and must not be mistaken for one.
+EPISODE_ONLY_NON_MATCHES = [
+    "Sleep 2024",
+    "The Sleepover 2",
+    "Deep 6",
+    "Steep 3",
+    "Prep 101",
+    "Jeep 4x4 Adventure",
+    "Pechino Express",
+    "Episodes",
+    "Chernobyl",
+    "Chernobyl: I nastri perduti",
+]
+
+
+def test_companion_field_carries_the_episode() -> None:
+    for attributes, show, season, episode, episode_title in COMPANION_CASES:
+        item = parse_attributes(attributes).item
+        _check(item is not None, f"{attributes!r} did not parse")
+        _check(
+            item.kind == KIND_EPISODE,
+            f"{attributes!r} -> {item.kind}, expected episode",
+        )
+        _check(
+            item.title == show and item.season == season and item.episode == episode,
+            f"{attributes!r} -> {item.title!r} S{item.season}E{item.episode}, "
+            f"expected {show!r} S{season}E{episode}",
+        )
+        _check(
+            item.episode_title == episode_title,
+            f"{attributes!r} -> episode title {item.episode_title!r}, "
+            f"expected {episode_title!r}",
+        )
+
+
+def test_companion_field_ignores_artists_and_channels() -> None:
+    for artist in COMPANION_NON_EPISODES:
+        item = parse_attributes(
+            {"media_title": "Some Show", "media_artist": artist}
+        ).item
+        _check(
+            item.kind != KIND_EPISODE,
+            f"artist {artist!r} was mistaken for an episode reference",
+        )
+
+
+def test_title_regex_beats_the_companion_field() -> None:
+    """A complete reference in the title wins over a companion field."""
+    item = parse_attributes(
+        {
+            "media_title": "Matlock - S2 ∙ E2 - Un'altra Matlock",
+            "media_artist": "Stagione 9, Ep. 9 Wrong",
+        }
+    ).item
+    _check(
+        item.season == 2 and item.episode == 2,
+        f"expected S02E02 from the title, got S{item.season}E{item.episode}",
+    )
+
+
+def test_structured_attributes_beat_the_companion_field() -> None:
+    item = parse_attributes(
+        {
+            "media_series_title": "Severance",
+            "media_season": 2,
+            "media_episode": 7,
+            "media_title": "Chikhai Bardo",
+            "media_artist": "S9 E9 Wrong",
+        }
+    ).item
+    _check(
+        item.season == 2 and item.episode == 7,
+        f"expected S02E07 from attributes, got S{item.season}E{item.episode}",
+    )
+
+
+def test_season_and_episode_without_a_series_title() -> None:
+    """Numbers with no series title: the title is the show's, not the episode's."""
+    item = parse_attributes(
+        {"media_title": "Silo", "media_season": 2, "media_episode": 3}
+    ).item
+    _check(item.kind == KIND_EPISODE, f"got {item.kind}, expected episode")
+    _check(
+        item.title == "Silo" and item.season == 2 and item.episode == 3,
+        f"got {item.title!r} S{item.season}E{item.episode}, expected Silo S2E3",
+    )
+
+
+def test_episode_number_without_a_season() -> None:
+    """The season is left open for the resolver, never assumed to be 1."""
+    for raw, show, episode in EPISODE_ONLY_CASES:
+        item = parse_attributes({"media_title": raw}).item
+        _check(item is not None, f"{raw!r} did not parse")
+        _check(item.kind == KIND_EPISODE, f"{raw!r} -> {item.kind}, expected episode")
+        _check(item.title == show, f"{raw!r} -> {item.title!r}, expected {show!r}")
+        _check(item.episode == episode, f"{raw!r} -> E{item.episode}, expected E{episode}")
+        _check(item.season is None, f"{raw!r} assumed season {item.season}")
+        _check(item.slug == f"{show} E{episode:02d}", f"{raw!r} -> slug {item.slug!r}")
+
+
+def test_episode_number_without_a_season_ignores_lookalikes() -> None:
+    for raw in EPISODE_ONLY_NON_MATCHES:
+        item = parse_attributes({"media_title": raw}).item
+        _check(
+            item is None or item.kind != KIND_EPISODE,
+            f"{raw!r} was mistaken for an episode",
+        )
+
+
 if __name__ == "__main__":
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     failures = 0

@@ -192,7 +192,12 @@ class TraktResolver:
         # Only explicit identities (a parsed S/E, or a movie) are cacheable.
         # Shows and bare titles resolve to an episode dynamically, so caching
         # them under the title would pin the wrong episode next time.
-        cacheable = item.kind in (KIND_MOVIE, KIND_EPISODE)
+        # An episode with no season is not a complete identity: the same number
+        # means a different episode once the show gains a second season, so it
+        # must be re-resolved rather than pinned in the cache.
+        cacheable = item.kind == KIND_MOVIE or (
+            item.kind == KIND_EPISODE and item.season is not None
+        )
         if cacheable and (cached := self._cache.get(key)) is not None:
             return cached
 
@@ -211,7 +216,7 @@ class TraktResolver:
         if item.kind == KIND_MOVIE:
             return await self._resolve_movie(item, duration)
         if item.kind == KIND_EPISODE:
-            return await self._resolve_episode(item, duration)
+            return await self._resolve_episode(item, duration, thumbnail_hash)
         if item.kind == KIND_SHOW:
             return await self._resolve_show(item, duration, thumbnail_hash)
         return await self._resolve_ambiguous(item, duration, thumbnail_hash)
@@ -248,23 +253,55 @@ class TraktResolver:
         return show
 
     async def _resolve_episode(
-        self, item: MediaItem, duration: float | None = None
+        self,
+        item: MediaItem,
+        duration: float | None = None,
+        thumbnail_hash: int | None = None,
     ) -> Resolved:
         show = await self._find_show(item.title, item.year, duration)
         show_ids = show.get("ids", {})
         show_id = show_ids.get("trakt")
 
+        season = item.season
+        if season is None:
+            # The player gave an episode number but no season. That is only
+            # unambiguous when the show has a single season, which is why the
+            # season list decides it rather than an assumed 1.
+            season = await self._sole_season(show_id)
+            if season is None:
+                _LOGGER.debug(
+                    "%s has more than one season, cannot place episode %s alone",
+                    item.title,
+                    item.episode,
+                )
+                return await self._resolve_show(item, duration, thumbnail_hash)
+
         try:
             episode = await self._client.async_get_episode(
-                show_id, item.season or 0, item.episode or 0
+                show_id, season, item.episode or 0
             )
         except TraktNotFoundError as err:
             raise ResolutionError(
                 "episode_not_found",
-                f"{show.get('title')} has no S{item.season:02d}E{item.episode:02d}",
+                f"{show.get('title')} has no S{season:02d}E{item.episode or 0:02d}",
             ) from err
 
         return self._episode_result(show, episode, item.method)
+
+    async def _sole_season(self, show_id: int) -> int | None:
+        """The show's only season number, or ``None`` if it has several."""
+        try:
+            seasons = await self._client.async_get_seasons(show_id)
+        except TraktError as err:
+            _LOGGER.debug("Could not list seasons for %s: %s", show_id, err)
+            return None
+        # Season 0 is Trakt's specials bucket and never the one we want.
+        numbers = {
+            number
+            for season in seasons
+            if isinstance(number := season.get("number"), int) and number > 0
+        }
+        return numbers.pop() if len(numbers) == 1 else None
 
     def _episode_result(
         self,

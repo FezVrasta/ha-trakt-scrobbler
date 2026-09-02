@@ -8,8 +8,16 @@ fill in the dedicated ``media_series_title`` / ``media_season`` /
     Infuse       "Spider-Noir - S1 ∙ E1 - Entra nel mio ufficio"
     Apple TV app "Ted Lasso"
 
-So we try the structured attributes first and only fall back to picking the
-title apart with regexes.
+Several apps put the show name in ``media_title`` and the episode reference in
+``media_artist`` instead, which looks like a bare show name unless that second
+field is read too:
+
+    Prime Video  "The Boys"    + "Stagione 5, Ep. 6 Cadesse il cielo"
+    Prime Video  "The Boys"    + "S5 E4 In aggiornamento"
+    Disney+      "Only Murders" + "S1:E4 Alluvione lampo"
+
+So we try the structured attributes first, then the title, then the companion
+fields, and only give up on the episode number when none of them carry one.
 """
 
 from __future__ import annotations
@@ -29,6 +37,10 @@ _DASH = r"[-–—]"
 _SE_SEP = r"[\s∙·•\.]"
 
 _YEAR_RE = re.compile(r"\s*[\(\[](?P<year>(?:19|20)\d{2})[\)\]]\s*$")
+
+# Punctuation apps put between the season and the episode, and between the
+# episode number and its title.
+_REF_SEP = r"[,;:·•∙\.\-–—]"
 
 # Junk that release-named files drag along; stripped before matching.
 _NOISE_RE = re.compile(
@@ -78,6 +90,40 @@ _EPISODE_PATTERNS: tuple[re.Pattern[str], ...] = (
 )
 
 
+# Companion attributes that may carry the episode reference when `media_title`
+# holds only the show name. Ordered by how likely they are to be right.
+_EPISODE_REF_ATTRS: tuple[str, ...] = (
+    "media_artist",
+    "media_album_name",
+    "media_album_artist",
+)
+
+# An episode number with no season beside it -- "Chernobyl Ep.05". Common for
+# miniseries, where the app drops a season it considers redundant. The keyword
+# is mandatory and must follow a separator, so "Sleep 2024" cannot match it.
+_EPISODE_ONLY_RE = re.compile(
+    r"^(?P<show>.+?)[\s:,\-–—]+"
+    r"(?:episodio|episode|épisode|folge|ep)\b\s*\.?\s*"
+    r"(?P<episode>\d{1,4})"
+    rf"(?:\s*(?:{_DASH}|:)\s*(?P<title>.+))?$",
+    re.IGNORECASE,
+)
+
+# A season/episode reference standing on its own, i.e. with no show name in
+# front of it -- "Stagione 5, Ep. 6 Cadesse il cielo", "S5 E4 In aggiornamento",
+# "S1:E4 Alluvione lampo", "Season 2, Episode 10: Title". The season word is
+# required, so a plain artist or channel name cannot match by accident.
+_EPISODE_REF_RE = re.compile(
+    r"^\s*(?:stagione|season|staffel|saison|temporada|serie|s)\s*"
+    r"(?P<season>\d{1,3})"
+    rf"\s*{_REF_SEP}?\s*"
+    r"(?:episodio|episode|épisode|folge|ep|e)\s*\.?\s*"
+    r"(?P<episode>\d{1,4})"
+    rf"(?:\s*{_REF_SEP}?\s*(?P<title>.+))?$",
+    re.IGNORECASE,
+)
+
+
 @dataclass(slots=True)
 class MediaItem:
     """A normalised description of what a player is showing."""
@@ -95,7 +141,10 @@ class MediaItem:
     @property
     def slug(self) -> str:
         """A short human label, e.g. ``Spider-Noir S01E01``."""
-        if self.kind == KIND_EPISODE:
+        if self.kind == KIND_EPISODE and self.episode is not None:
+            if self.season is None:
+                # Season still to be settled against Trakt's season list.
+                return f"{self.title} E{self.episode:02d}"
             return f"{self.title} S{self.season:02d}E{self.episode:02d}"
         if self.year:
             return f"{self.title} ({self.year})"
@@ -183,6 +232,78 @@ def parse_title(raw: str) -> MediaItem | None:
     return None
 
 
+def parse_episode_ref(raw: str) -> tuple[int, int, str | None] | None:
+    """Read a standalone ``S1:E4 Title`` style reference.
+
+    Returns ``(season, episode, episode_title)``, or ``None`` when the string
+    carries no season/episode -- which is what a music artist or a YouTube
+    channel name in the same attribute does.
+    """
+    match = _EPISODE_REF_RE.match(raw.strip())
+    if not match:
+        return None
+    season = _as_int(match.group("season"))
+    episode = _as_int(match.group("episode"))
+    if season is None or episode is None:
+        return None
+    title = match.group("title")
+    return season, episode, (_clean(title) or None if title else None)
+
+
+def parse_episode_only(raw: str) -> MediaItem | None:
+    """Read a ``Show Ep.5`` title, where no season is given.
+
+    The season is left as ``None`` for the resolver to settle: a miniseries has
+    only one, so the number alone identifies the episode, but a show with
+    several seasons stays ambiguous and must be pinned some other way.
+    """
+    match = _EPISODE_ONLY_RE.match(_clean(raw))
+    if not match:
+        return None
+    episode = _as_int(match.group("episode"))
+    if episode is None:
+        return None
+    show, year = _split_year(_clean(match.group("show")))
+    if not show:
+        return None
+    episode_title = match.group("title")
+    return MediaItem(
+        kind=KIND_EPISODE,
+        title=show,
+        year=year,
+        season=None,
+        episode=episode,
+        episode_title=_clean(episode_title) or None if episode_title else None,
+        raw_title=raw,
+        method="title_episode_only",
+    )
+
+
+def _episode_from_companion(
+    attributes: dict[str, Any], show: str, year: int | None, raw_title: str
+) -> MediaItem | None:
+    """Look for the episode reference in the fields beside ``media_title``."""
+    for attribute in _EPISODE_REF_ATTRS:
+        value = attributes.get(attribute)
+        if not value:
+            continue
+        reference = parse_episode_ref(str(value))
+        if reference is None:
+            continue
+        season, episode, episode_title = reference
+        return MediaItem(
+            kind=KIND_EPISODE,
+            title=show,
+            year=year,
+            season=season,
+            episode=episode,
+            episode_title=episode_title,
+            raw_title=raw_title,
+            method=f"companion_{attribute}",
+        )
+    return None
+
+
 def parse_attributes(attributes: dict[str, Any]) -> ParseResult:
     """Derive a :class:`MediaItem` from a media_player's attributes."""
     raw_title = attributes.get("media_title")
@@ -214,6 +335,26 @@ def parse_attributes(attributes: dict[str, Any]) -> ParseResult:
 
     raw_title = str(raw_title)
 
+    # 1b. Season and episode numbers, but no series title to hang them on. The
+    #     title is then the show's, not the episode's.
+    if not series:
+        season = _as_int(attributes.get("media_season"))
+        episode = _as_int(attributes.get("media_episode"))
+        if season is not None and episode is not None:
+            show, year = _split_year(_clean(raw_title))
+            if show:
+                return ParseResult(
+                    MediaItem(
+                        kind=KIND_EPISODE,
+                        title=show,
+                        year=year,
+                        season=season,
+                        episode=episode,
+                        raw_title=raw_title,
+                        method="attributes_no_series",
+                    )
+                )
+
     # 2. The player told us outright that this is a film.
     if content_type == "movie":
         title, year = _split_year(_clean(raw_title))
@@ -232,11 +373,24 @@ def parse_attributes(attributes: dict[str, Any]) -> ParseResult:
     if (item := parse_title(raw_title)) is not None:
         return ParseResult(item)
 
-    # 4. A bare name. It is a show or a film, but we cannot tell which from the
-    #    string alone -- the Trakt lookup gets to decide.
     title, year = _split_year(_clean(raw_title))
     if not title:
         return ParseResult(reason="no_title")
+
+    # 4. The title is a bare show name, but a companion attribute may still
+    #    carry the episode. Prime Video and Disney+ both do this, and without
+    #    reading it the resolver has nothing to go on but a guess.
+    if (item := _episode_from_companion(attributes, title, year, raw_title)) is not None:
+        return ParseResult(item)
+
+    # 5. An episode number with no season, e.g. NOW's "Chernobyl Ep.05". Tried
+    #    after the companion fields, which give a complete reference when they
+    #    give one at all.
+    if (item := parse_episode_only(raw_title)) is not None:
+        return ParseResult(item)
+
+    # 6. A bare name. It is a show or a film, but we cannot tell which from the
+    #    string alone -- the Trakt lookup gets to decide.
 
     if content_type in ("tvshow", "episode", "series", "season"):
         return ParseResult(
