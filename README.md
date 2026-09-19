@@ -13,6 +13,9 @@ Scrobbles whatever your Home Assistant media players are playing to
 - Sends `start` / `pause` / `stop` scrobbles as playback progresses.
 - Identifies the exact episode even when the player reports only a show name,
   by matching the episode thumbnail against Trakt's stills.
+- Tells apart shows that share a title (the 2016 *Grand Tour* and the 2026 one)
+  using the artwork and the episode's runtime, instead of taking Trakt's first
+  search hit.
 - Exposes a sensor per player with the artwork, title, episode, and progress.
 
 <p align="center">

@@ -6,6 +6,7 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from functools import partial
 from typing import Any, Callable
 
 from homeassistant.const import (
@@ -56,7 +57,7 @@ from .const import (
     TICK_INTERVAL,
 )
 from . import image_match
-from .parser import KIND_SHOW, MediaItem, parse_attributes
+from .parser import KIND_EPISODE, KIND_SHOW, MediaItem, parse_attributes
 from .resolver import Resolved, ResolutionError, TraktResolver
 
 _LOGGER = logging.getLogger(__name__)
@@ -404,11 +405,21 @@ class ScrobbleManager:
         # For a bare show name (the Apple TV app), the player's artwork is the
         # same frame Trakt uses for the episode still, so hash it and let the
         # resolver identify the exact episode instead of guessing.
+        #
+        # An episode that already carries its own S/E number is handed the
+        # loader rather than the hash: the artwork is then only fetched if the
+        # title turns out to belong to more than one show, which is the one
+        # case where an S/E number alone is not enough.
         thumbnail_hash = None
-        if self.thumbnail_match and parsed.item.kind in (KIND_SHOW, "ambiguous"):
-            thumbnail_hash = await self._async_thumbnail_hash(
-                session.entity_id, attributes
-            )
+        if self.thumbnail_match:
+            if parsed.item.kind in (KIND_SHOW, "ambiguous"):
+                thumbnail_hash = await self._async_thumbnail_hash(
+                    session.entity_id, attributes
+                )
+            elif parsed.item.kind == KIND_EPISODE:
+                thumbnail_hash = partial(
+                    self._async_thumbnail_hash, session.entity_id, attributes
+                )
 
         try:
             session.resolved = await self._resolver.async_resolve(

@@ -36,3 +36,4 @@ jobs:
       - run: python tests/test_progress.py
       - run: python tests/test_resolver.py
       - run: python tests/test_image_match.py
+      - run: python tests/test_twins.py

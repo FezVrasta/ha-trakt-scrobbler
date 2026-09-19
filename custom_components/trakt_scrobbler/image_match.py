@@ -28,7 +28,7 @@ _HASH_SIZE = 16
 _BITS = _HASH_SIZE * _HASH_SIZE
 
 #: A match must be at least this close (out of 256 bits)...
-_MAX_DISTANCE = 24
+MAX_DISTANCE = 24
 #: ...and this much closer than the runner-up, so we only accept a clear winner.
 _MIN_SEPARATION = 40
 
@@ -120,7 +120,7 @@ async def async_best_match(
         return None
 
     async def score(candidate: dict[str, Any]) -> tuple[int, dict[str, Any]] | None:
-        h = await async_fetch_and_hash(session, _https(candidate["image"]))
+        h = await async_fetch_and_hash(session, https(candidate["image"]))
         if h is None:
             return None
         return hamming(target, h), candidate
@@ -133,11 +133,11 @@ async def async_best_match(
     best_distance, best = results[0]
     runner_up = results[1][0] if len(results) > 1 else None
 
-    if best_distance > _MAX_DISTANCE:
+    if best_distance > MAX_DISTANCE:
         _LOGGER.debug(
             "Closest episode still was %d bits away (> %d); no thumbnail match",
             best_distance,
-            _MAX_DISTANCE,
+            MAX_DISTANCE,
         )
         return None
     if runner_up is not None and runner_up - best_distance < _MIN_SEPARATION:
@@ -155,7 +155,7 @@ async def async_best_match(
     )
 
 
-def _https(url: str) -> str:
+def https(url: str) -> str:
     if url.startswith("http"):
         return url
     return f"https://{url}"

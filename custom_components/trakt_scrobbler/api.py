@@ -254,11 +254,16 @@ class TraktClient:
     async def async_get_episode(
         self, show_id: int, season: int, episode: int
     ) -> dict[str, Any]:
-        """Look up a single episode, confirming it exists before scrobbling."""
+        """Look up a single episode, confirming it exists before scrobbling.
+
+        The still comes along with it: when two shows share a title and both
+        have this episode, comparing their stills with the player's artwork is
+        what tells them apart.
+        """
         return await self._request(
             "GET",
             f"/shows/{show_id}/seasons/{season}/episodes/{episode}",
-            params={"extended": "full"},
+            params={"extended": "full,images"},
             require_auth=False,
         )
 
