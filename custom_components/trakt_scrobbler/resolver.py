@@ -230,9 +230,19 @@ def _best(
 class TraktResolver:
     """Resolves media items to Trakt ids, caching what it has already looked up."""
 
-    def __init__(self, client: TraktClient, *, next_episode_fallback: bool) -> None:
+    def __init__(
+        self,
+        client: TraktClient,
+        *,
+        next_episode_fallback: bool,
+        language: str | None = None,
+    ) -> None:
         self._client = client
         self._next_episode_fallback = next_episode_fallback
+        #: Home Assistant's language, as the two letters Trakt wants. Players
+        #: report episode titles translated, Trakt answers in English, so this
+        #: is what lets the two be compared.
+        self._language = (language or "")[:2].lower() or None
         self._cache: dict[tuple, Resolved] = {}
         #: folded title -> the Trakt show id the artwork settled on, so a title
         #: with a twin is only disambiguated once per session.
@@ -262,7 +272,17 @@ class TraktResolver:
         instead of guessing, and when two shows share a title it is also what
         decides which of them is playing.
         """
-        key = (item.kind, item.title.lower(), item.year, item.season, item.episode)
+        # The episode title is part of the identity: two shows called the same
+        # thing both have an S01E02, so without it a cached resolution would be
+        # handed straight back for the other one's episode of the same number.
+        key = (
+            item.kind,
+            item.title.lower(),
+            item.year,
+            item.season,
+            item.episode,
+            _fold(item.episode_title),
+        )
         # Only explicit identities (a parsed S/E, or a movie) are cacheable.
         # Shows and bare titles resolve to an episode dynamically, so caching
         # them under the title would pin the wrong episode next time.
@@ -316,7 +336,11 @@ class TraktResolver:
         )
 
     async def _find_shows(
-        self, title: str, year: int | None, duration: float | None = None
+        self,
+        title: str,
+        year: int | None,
+        duration: float | None = None,
+        trust_pin: bool = True,
     ) -> list[dict[str, Any]]:
         """Shows Trakt knows by this name, best first.
 
@@ -331,15 +355,27 @@ class TraktResolver:
         if not candidates:
             raise ResolutionError("show_not_found", f"No Trakt show for {title!r}")
 
-        return self._prefer_pinned(title, year, [c.body for c in candidates])
+        return self._prefer_pinned(
+            title, year, [c.body for c in candidates], trust_pin
+        )
 
     def _prefer_pinned(
-        self, title: str, year: int | None, shows: list[dict[str, Any]]
+        self,
+        title: str,
+        year: int | None,
+        shows: list[dict[str, Any]],
+        trust_pin: bool = True,
     ) -> list[dict[str, Any]]:
-        """Narrow same-named shows to the one already settled this session."""
+        """Narrow same-named shows to the one already settled this session.
+
+        The pin exists to save an expensive artwork comparison, so a caller
+        holding a signal that settles the twins on its own passes
+        ``trust_pin=False``: watching the 2016 series after the 2026 one must
+        not keep resolving to the 2026 one for the rest of the session.
+        """
         if len(shows) < 2:
             return shows
-        pinned = self._twin_choice.get((_fold(title), year))
+        pinned = self._twin_choice.get((_fold(title), year)) if trust_pin else None
         for show in shows:
             if pinned is not None and _show_id(show) == pinned:
                 return [show]
@@ -380,7 +416,11 @@ class TraktResolver:
         thumb: _Thumbnail | None = None,
     ) -> Resolved:
         thumb = thumb or _Thumbnail()
-        shows = await self._find_shows(item.title, item.year, duration)
+        # An episode title separates the twins on its own, so don't let a pin
+        # from earlier in the session narrow the field before it can.
+        shows = await self._find_shows(
+            item.title, item.year, duration, trust_pin=not item.episode_title
+        )
 
         found: list[tuple[dict[str, Any], dict[str, Any]]] = []
         for show in shows:
@@ -446,13 +486,18 @@ class TraktResolver:
     ) -> tuple[tuple[dict[str, Any], dict[str, Any]], bool]:
         """Choose between same-named shows that both carry this episode.
 
-        The episode's own runtime is a far sharper test than the show average
-        the search ranking had to use, so it goes first; the artwork settles
-        whatever is left. The flag says whether anything actually decided, as
-        opposed to the last candidate standing being taken on trust.
+        The episode title goes first: two shows sharing a name never name their
+        episodes the same way, and the player usually reports it right beside
+        the number. Then the episode's own runtime, a far sharper test than the
+        show average the search ranking had to use, and finally the artwork.
+        The flag says whether anything actually decided, as opposed to the last
+        candidate standing being taken on trust.
         """
         if len(found) == 1:
             return found[0], True
+
+        if (picked := await self._match_episode_title(found, item)) is not None:
+            return picked, True
 
         fitting = [
             pair
@@ -477,9 +522,77 @@ class TraktResolver:
             item.title,
             len(found),
             remaining[0][0],
-            "neither the episode runtime nor the artwork separates them",
+            "neither the episode title, its runtime nor the artwork separates them",
         )
         return remaining[0], False
+
+    async def _match_episode_title(
+        self,
+        found: list[tuple[dict[str, Any], dict[str, Any]]],
+        item: MediaItem,
+    ) -> tuple[dict[str, Any], dict[str, Any]] | None:
+        """Pick the show whose episode is actually called what the player says.
+
+        This is both the sharpest signal and the cheapest: the episodes are
+        already in hand, and two shows that share a name never share their
+        episode titles. Prime Video puts it right after the number --
+        "Stagione 1, Ep. 2 Sudore, auto sportive e Singapore" -- which is the
+        one thing that tells the 2016 Grand Tour from the 2026 one when both
+        run about 50 minutes and the app shows series key art rather than an
+        episode still.
+
+        The catch is language. The player names the episode in the user's
+        language and Trakt answers in English, so when the direct comparison
+        finds nothing, ask Trakt for the same episode translated before giving
+        up.
+        """
+        wanted = _fold(item.episode_title)
+        if not wanted:
+            return None
+
+        matching = [pair for pair in found if _fold(pair[1].get("title")) == wanted]
+        if not matching and self._language:
+            matching = await self._match_translated_title(found, wanted)
+        if len(matching) != 1:
+            return None
+
+        show = matching[0][0]
+        _LOGGER.debug(
+            "Episode title %r picked %s (%s) out of %d same-named shows",
+            item.episode_title,
+            show.get("title"),
+            show.get("year"),
+            len(found),
+        )
+        return matching[0]
+
+    async def _match_translated_title(
+        self,
+        found: list[tuple[dict[str, Any], dict[str, Any]]],
+        wanted: str,
+    ) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+        """The candidates whose episode carries ``wanted`` as a translated title."""
+        matching: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        for pair in found:
+            show, episode = pair
+            try:
+                translations = await self._client.async_get_episode_translations(
+                    _show_id(show),
+                    episode.get("season"),
+                    episode.get("number"),
+                    self._language,
+                )
+            except TraktError as err:
+                _LOGGER.debug(
+                    "Could not read %s translations for %s: %s",
+                    self._language,
+                    show.get("title"),
+                    err,
+                )
+                continue
+            if any(_fold(entry.get("title")) == wanted for entry in translations):
+                matching.append(pair)
+        return matching
 
     async def _match_episode_still(
         self,

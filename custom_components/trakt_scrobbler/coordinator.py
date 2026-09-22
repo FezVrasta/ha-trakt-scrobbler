@@ -204,7 +204,11 @@ class ScrobbleManager:
         self._ignored: dict[str, str] = {}
 
         self._resolver = TraktResolver(
-            client, next_episode_fallback=self.next_episode_fallback
+            client,
+            next_episode_fallback=self.next_episode_fallback,
+            # Players report episode titles in the user's language, which for a
+            # Home Assistant install is the one configured here.
+            language=hass.config.language,
         )
         self._unsubscribers: list[CALLBACK_TYPE] = []
         self._listeners: list[Callable[[], None]] = []

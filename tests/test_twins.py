@@ -164,6 +164,15 @@ EPISODES = {
 }
 
 
+# The same episodes in Italian, as Trakt's /translations/it returns them. This
+# is what a player configured in Italian reports, and the reason the English
+# titles above cannot be compared with it directly.
+TRANSLATIONS = {
+    (1, 1, 2): "Operazione Intoppo nel deserto",
+    (2, 1, 2): "Sudore, auto sportive e Singapore",
+}
+
+
 def _episode(show_id: int, season: int, number: int) -> dict:
     title, runtime = EPISODES[show_id][(season, number)]
     url = f"still/{show_id}/{season}/{number}"
@@ -191,6 +200,7 @@ class StubClient:
         self.shows = SHOW_RESULTS if shows is None else shows
         self.searches: list[tuple] = []
         self.season_lookups: list[int] = []
+        self.translation_lookups: list[tuple] = []
 
     async def async_search(self, kind, query, year=None):
         self.searches.append((kind, query, year))
@@ -210,6 +220,13 @@ class StubClient:
             raise TraktNotFoundError("no such episode")
         return _episode(show_id, season, episode)
 
+    async def async_get_episode_translations(self, show_id, season, episode, language):
+        self.translation_lookups.append((show_id, season, episode, language))
+        if language != "it":
+            return []
+        title = TRANSLATIONS.get((show_id, season, episode))
+        return [{"title": title, "language": "it"}] if title else []
+
     async def async_get_watched_progress(self, show_id):
         return {"next_episode": {"season": 1, "number": 1}}
 
@@ -220,19 +237,22 @@ def _show_item(title="The Grand Tour"):
     )
 
 
-def _episode_item(season, number, title="The Grand Tour"):
+def _episode_item(season, number, title="The Grand Tour", episode_title=None):
     return MediaItem(
         kind=parser.KIND_EPISODE,
         title=title,
         season=season,
         episode=number,
+        episode_title=episode_title,
         raw_title=title,
         method="companion_media_artist",
     )
 
 
-def _resolve(client, item, duration=None, thumbnail=None):
-    res = resolver.TraktResolver(client, next_episode_fallback=True)
+def _resolve(client, item, duration=None, thumbnail=None, language=None):
+    res = resolver.TraktResolver(
+        client, next_episode_fallback=True, language=language
+    )
     return asyncio.run(res.async_resolve(item, duration, thumbnail))
 
 
@@ -328,6 +348,103 @@ def test_the_artwork_is_not_fetched_when_the_title_is_unmistakable():
     resolved = _resolve(client, _episode_item(1, 2), thumbnail=loader)
     assert resolved.show_id == 2
     assert calls == [], "artwork was fetched for an unambiguous title"
+
+
+# ---------------------------------------------------------------------------
+# The episode title, which is what Prime Video actually gives us
+# ---------------------------------------------------------------------------
+
+
+def test_the_episode_title_separates_the_twins():
+    """Two shows of one name never name their episodes the same way."""
+    client = StubClient()
+    resolved = _resolve(
+        client,
+        _episode_item(1, 2, episode_title="Sweat, Sports Cars and Singapore"),
+        duration=52 * 60,
+    )
+    assert resolved.show_id == 2, f"picked {resolved.display}"
+    assert client.translation_lookups == [], "translated for an English title"
+
+
+def test_a_translated_episode_title_separates_the_twins():
+    """The live regression.
+
+    Prime Video on an Italian Apple TV reports "Stagione 1, Ep. 2 Sudore, auto
+    sportive e Singapore" for a 3105-second episode. Both shows have an S01E02
+    of a believable length (58 and 52 minutes against 51.8), and the app shows
+    series key art rather than an episode still, so the artwork sits ~130 bits
+    away from both. Only the title is left.
+    """
+    resolved = _resolve(
+        StubClient(),
+        _episode_item(1, 2, episode_title="Sudore, auto sportive e Singapore"),
+        duration=3105,
+        language="it",
+    )
+    assert resolved.show_id == 2, f"picked {resolved.display}"
+    assert resolved.extra["episode_title"] == "Sweat, Sports Cars and Singapore"
+
+
+def test_a_translated_title_finds_the_original_too():
+    resolved = _resolve(
+        StubClient(),
+        _episode_item(1, 2, episode_title="Operazione Intoppo nel deserto"),
+        duration=3105,
+        language="it",
+    )
+    assert resolved.show_id == 1, f"picked {resolved.display}"
+
+
+def test_a_title_in_a_language_trakt_cannot_supply_is_no_worse_than_before():
+    """Fall through to runtime and artwork rather than guessing off a miss."""
+    client = StubClient()
+    resolved = _resolve(
+        client,
+        _episode_item(1, 2, episode_title="Sueur, voitures de sport et Singapour"),
+        duration=3105,
+        language="fr",
+    )
+    assert client.translation_lookups == [(1, 1, 2, "fr"), (2, 1, 2, "fr")]
+    assert resolved.show_id == 1  # the old coin toss, unchanged
+
+
+def test_the_episode_title_beats_a_pin_from_earlier_in_the_session():
+    """Watching the original after the revival must not stay on the revival."""
+    client = StubClient()
+    res = resolver.TraktResolver(client, next_episode_fallback=True, language="it")
+    first = asyncio.run(
+        res.async_resolve(
+            _episode_item(1, 2, episode_title="Sudore, auto sportive e Singapore"),
+            3105,
+        )
+    )
+    assert first.show_id == 2
+
+    second = asyncio.run(
+        res.async_resolve(
+            _episode_item(1, 2, episode_title="Operazione Intoppo nel deserto"),
+            3105,
+        )
+    )
+    assert second.show_id == 1, f"the pin survived: {second.display}"
+
+
+def test_the_cache_does_not_hand_back_the_other_shows_episode():
+    """Same title, same S01E02 -- but not the same episode."""
+    client = StubClient()
+    res = resolver.TraktResolver(client, next_episode_fallback=True)
+    revival = asyncio.run(
+        res.async_resolve(
+            _episode_item(1, 2, episode_title="Sweat, Sports Cars and Singapore")
+        )
+    )
+    original = asyncio.run(
+        res.async_resolve(
+            _episode_item(1, 2, episode_title="Operation Desert Stumble")
+        )
+    )
+    assert (revival.show_id, original.show_id) == (2, 1)
 
 
 def test_a_coin_toss_is_not_remembered():

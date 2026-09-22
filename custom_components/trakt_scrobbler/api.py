@@ -267,6 +267,24 @@ class TraktClient:
             require_auth=False,
         )
 
+    async def async_get_episode_translations(
+        self, show_id: int, season: int, episode: int, language: str
+    ) -> list[dict[str, Any]]:
+        """An episode's title in one language.
+
+        Players name the episode in the user's own language -- Prime Video
+        reports "Sudore, auto sportive e Singapore" where Trakt says "Sweat,
+        Sports Cars and Singapore" -- so comparing the two needs the
+        translation.
+        """
+        result = await self._request(
+            "GET",
+            f"/shows/{show_id}/seasons/{season}/episodes/{episode}"
+            f"/translations/{language}",
+            require_auth=False,
+        )
+        return result if isinstance(result, list) else []
+
     async def async_get_seasons(self, show_id: int) -> list[dict[str, Any]]:
         """List a show's seasons (numbers only needed)."""
         result = await self._request(
